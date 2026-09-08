@@ -1,0 +1,18 @@
+# Build artifacts
+bin/
+obj/
+out/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config secrets
+appsettings.Local.json
