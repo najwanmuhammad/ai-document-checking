@@ -2,7 +2,15 @@
 
 // ---------- /extract ----------
 
-public record ExtractedField(string Label, string Value, double? Confidence = null);
+public record ExtractedField(
+    string Label, 
+    string Value, 
+    double? Confidence = null,
+    double? BoundingBoxX = null,  // Posisi horizontal
+    double? BoundingBoxY = null,  // Posisi vertikal
+    double? Width = null,         // Lebar area teks
+    double? Height = null         // Tinggi area teks
+    );
 
 public record ExtractRequest(string DocumentTypeHint); // hint opsional dari .NET Invoice Portal, tetap divalidasi ulang oleh classifier
 

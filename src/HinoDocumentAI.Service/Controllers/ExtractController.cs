@@ -27,9 +27,9 @@ public class ExtractController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<ExtractResponse>> Extract(IFormFile file, [FromForm] string? documentTypeHint)
     {
-        if (file.Length == 0)
+        if (file == null || file.Length == 0)
         {
-            return BadRequest("File kosong.");
+            return BadRequest("File kosong atau tidak valid.");
         }
 
         string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + Path.GetExtension(file.FileName));
@@ -52,7 +52,11 @@ public class ExtractController : ControllerBase
             // yang ternyata tidak sesuai konteksnya).
             var detectedType = DocumentType.Unknown;
 
-            return Ok(new ExtractResponse(detectedType, rawText, fields));
+            return Ok(new ExtractResponse(
+                DetectedDocumentType: detectedType,
+                RawText: rawText,
+                Fields: fields
+            ));
         }
         finally
         {

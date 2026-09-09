@@ -111,6 +111,7 @@ public class OcrService : IOcrService, IDisposable
         // sinyal tipe data + posisi ini yang terbukti penting di ablation
         // study OCRMiner (PRD Bagian 5 & 15). Untuk versi awal, field masih
         // diperlakukan flat per baris teks; penyempurnaan posisi menyusul.
+
         //var fields = result.Regions
         //    .Select(r => new ExtractedField(Label: "", Value: r.Text, Confidence: r.Score))
         //    .ToList();
@@ -132,9 +133,19 @@ public class OcrService : IOcrService, IDisposable
                 // 3. Pastikan Value tidak null untuk keamanan tambahan
                 string safeText = r.Text ?? string.Empty;
 
-                return new ExtractedField(Label: "", Value: safeText, Confidence: safeScore);
+                return new ExtractedField(
+                    Label: "", 
+                    Value: safeText, 
+                    Confidence: safeScore,
+                    // Ambil koordinat dari RotatedRect milik PaddleSharp
+                    BoundingBoxX: r.Rect.Center.X,
+                    BoundingBoxY: r.Rect.Center.Y,
+                    Width: r.Rect.Size.Width,
+                    Height: r.Rect.Size.Height
+                );
             })
             .ToList();
+
         // Pastikan Text utama juga tidak null
         return (result.Text ?? string.Empty, fields);
     }
