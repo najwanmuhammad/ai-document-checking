@@ -1,5 +1,4 @@
-﻿# Nama Project
-Hino Document AI Checking
+﻿# Hino Document AI Checking
 
 # Tanggal Mulai
 8 September 2026
