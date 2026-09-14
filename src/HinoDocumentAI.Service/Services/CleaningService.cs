@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+﻿using System.Text.Json;
 using OllamaSharp;
 using HinoDocumentAI.Service.Models;
 
@@ -6,246 +6,65 @@ namespace HinoDocumentAI.Service.Services;
 
 public interface ICleaningService
 {
-    Task<List<CleanedField>> CleanAsync(DocumentType docType, List<ExtractedField> fields);
+    Task<CleanResponse> CleanAsync(DocumentType docType, string rawText);
 }
 
 /// <summary>
-/// Normalisasi label kolom mentah -> field baku. Urutan pengecekan (murah
-/// ke mahal), lihat PRD Bagian 12 & 15:
-///   1. Dictionary sinonim (butuh label asli hasil OCR, bukan "unknown").
-///   2. Pola nilai (regex berdasarkan BENTUK value) — jalan walau label
-///      tidak ketemu, menangani mayoritas kasus tanpa perlu AI sama sekali.
-///   3. Embedding similarity via Ollama (bge-m3) — HANYA kalau ada label
-///      asli yang bisa dibandingkan maknanya.
-///   4. LLM fallback via Ollama (qwen2.5:1.5b) — benar-benar upaya terakhir.
+/// Strukturisasi teks mentah OCR jadi field baku, langsung oleh LLM
+/// (qwen2.5:3b) — menggantikan pendekatan heuristik posisi yang terbukti
+/// tidak generalize ke variasi layout supplier (lihat PRD Bagian 13.2).
+/// Model dinaikkan dari 1.5B ke 3B karena tugas structuring jauh lebih
+/// berat dari sekadar klasifikasi satu label -> field.
 /// </summary>
 public class CleaningService : ICleaningService
 {
-    private readonly OllamaApiClient _embedClient;
     private readonly OllamaApiClient _chatClient;
-    private readonly double _embeddingConfidenceThreshold;
     private readonly ILogger<CleaningService> _logger;
-
-    private Dictionary<string, float[]>? _canonicalFieldEmbeddings;
-
-    private static readonly Regex PricePattern = new(@"^\d{1,3}(,\d{3})*\.\d{2}$", RegexOptions.Compiled);
-    private static readonly Regex QuantityWithUnitPattern = new(
-        @"^\d+(\.\d+)?\s*(KT|PC|PCS|KG|SET|UNIT|PAIR)$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex PartNumberPattern = new(@"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", RegexOptions.Compiled);
-    private static readonly string[] MonthNames =
-    {
-        "jan","feb","mar","apr","mei","jun","jul","agu","aug","sep","okt","oct","nov","des","dec",
-        "january","february","march","april","may","june","july","august","september","october","november","december",
-        "januari","februari","maret","april","juni","juli","agustus","september","oktober","november","desember"
-    };
 
     public CleaningService(IConfiguration config, ILogger<CleaningService> logger)
     {
         _logger = logger;
         var baseUrl = config["Ollama:BaseUrl"] ?? "http://localhost:11434";
-        var embeddingModel = config["Ollama:EmbeddingModel"] ?? "bge-m3";
-        var llmModel = config["Ollama:LlmFallbackModel"] ?? "qwen2.5:1.5b";
-
-        _embedClient = new OllamaApiClient(baseUrl, embeddingModel);
-        _chatClient = new OllamaApiClient(baseUrl, llmModel);
-
-        _embeddingConfidenceThreshold = config.GetValue("Ollama:EmbeddingConfidenceThreshold", 0.75);
+        var model = config["Ollama:StructuringModel"] ?? "qwen2.5:3b";
+        _chatClient = new OllamaApiClient(baseUrl, model);
     }
 
-    public async Task<List<CleanedField>> CleanAsync(DocumentType docType, List<ExtractedField> fields)
+    public async Task<CleanResponse> CleanAsync(DocumentType docType, string rawText)
     {
-        string[] canonicalFields = docType switch
+        string schemaHint = docType switch
         {
-            DocumentType.Invoice => CanonicalFields.InvoiceHeader.Concat(CanonicalFields.LineItem).ToArray(),
-            DocumentType.DeliveryNote => CanonicalFields.DeliveryNoteHeader.Concat(CanonicalFields.LineItem).ToArray(),
-            DocumentType.TaxInvoice => CanonicalFields.TaxInvoiceHeader.Concat(CanonicalFields.LineItem).ToArray(),
-            _ => throw new ArgumentOutOfRangeException(nameof(docType), "Jenis dokumen tidak dikenali — pastikan sudah melalui langkah klasifikasi (FR-8) sebelum cleaning.")
+            DocumentType.Invoice => """
+                {"invoice_number": "...", "invoice_date": "...", "supplier_name": "...",
+                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "...", "price": "..."}]}
+                """,
+            DocumentType.DeliveryNote => """
+                {"delivery_note_number": "...", "delivery_date": "...", "supplier_name": "...",
+                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "..."}]}
+                """,
+            DocumentType.TaxInvoice => """
+                {"tax_invoice_number": "...", "tax_invoice_date": "...", "supplier_name": "...", "tax_amount": "...",
+                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "..."}]}
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(docType))
         };
 
-        await EnsureCanonicalEmbeddingsAsync(canonicalFields);
-
-        var results = new List<CleanedField>();
-        foreach (var field in fields)
-        {
-            // Buang token yang jelas tidak berguna (simbol mata uang lepas,
-            // tanda baca lepas) sebelum diproses sama sekali.
-            if (CanonicalFields.NoiseValues.Contains(field.Value.Trim()))
-            {
-                continue;
-            }
-
-            results.Add(await CleanOneFieldAsync(docType, field, canonicalFields));
-        }
-        return results;
-    }
-
-    private async Task<CleanedField> CleanOneFieldAsync(DocumentType docType, ExtractedField field, string[] canonicalFields)
-    {
-        var normalizedLabel = field.Label.Trim().ToLowerInvariant();
-        bool hasRealLabel = !string.IsNullOrWhiteSpace(normalizedLabel) && normalizedLabel != "unknown";
-
-        // 1. Dictionary sinonim (butuh label asli)
-        if (hasRealLabel && CanonicalFields.KnownSynonyms.TryGetValue(normalizedLabel, out var known))
-        {
-            return Finalize(docType, known, field, 1.0, "dictionary");
-        }
-
-        // 2. Pola nilai (regex) — jalan walau label "unknown". Ini yang
-        // menangkap mayoritas kasus yang kemarin salah lempar ke LLM.
-        var (patternField, patternConfidence) = TryClassifyByValuePattern(field.Value);
-        if (patternField != null && (!hasRealLabel || patternConfidence >= _embeddingConfidenceThreshold))
-        {
-            return Finalize(docType, patternField, field, patternConfidence, "pattern");
-        }
-
-        // 3. Embedding similarity — HANYA kalau ada label asli. Meng-embed
-        // literal kata "unknown" ke nama field baku tidak ada artinya dan
-        // cuma buang-buang panggilan Ollama (ini salah satu sumber
-        // performa lambat & hasil ngaco kemarin).
-        if (hasRealLabel)
-        {
-            var (bestField, score) = await FindClosestFieldByEmbeddingAsync(field.Label, canonicalFields);
-            if (score >= _embeddingConfidenceThreshold)
-            {
-                return Finalize(docType, bestField, field, score, "embedding");
-            }
-        }
-
-        // 4. Fallback LLM — benar-benar upaya terakhir sekarang, bukan
-        // jalur utama seperti kemarin.
-        _logger.LogInformation("Fallback LLM untuk label '{Label}' / value '{Value}'.", field.Label, field.Value);
-        var (llmField, llmConfidence) = await AskLlmForFieldAsync(field.Label, field.Value, canonicalFields);
-        return Finalize(docType, llmField, field, llmConfidence, "llm_fallback");
-    }
-
-    /// <summary>
-    /// Field placeholder "document_number"/"document_date" (dipetakan oleh
-    /// dictionary/pattern generik) diselesaikan ke nama field final sesuai
-    /// jenis dokumen di sini — sebelumnya cuma dikomentari "akan dipetakan"
-    /// tapi kodenya belum ditulis, jadi field ini nyangkut sebagai
-    /// "document_number" mentah di semua hasil cleaning.
-    /// </summary>
-    private static CleanedField Finalize(DocumentType docType, string canonicalField, ExtractedField field, double confidence, string method)
-    {
-        string resolved = canonicalField switch
-        {
-            "document_number" => docType switch
-            {
-                DocumentType.Invoice => "invoice_number",
-                DocumentType.DeliveryNote => "delivery_note_number",
-                DocumentType.TaxInvoice => "tax_invoice_number",
-                _ => canonicalField
-            },
-            "document_date" => docType switch
-            {
-                DocumentType.Invoice => "invoice_date",
-                DocumentType.DeliveryNote => "delivery_date",
-                DocumentType.TaxInvoice => "tax_invoice_date",
-                _ => canonicalField
-            },
-            _ => canonicalField
-        };
-        return new CleanedField(resolved, field.Value, field.Label, confidence, method);
-    }
-
-    /// <summary>
-    /// Klasifikasi berdasarkan BENTUK value, bukan label — berguna untuk
-    /// OCR fragment yang labelnya tidak ketemu ("unknown"). Pola-pola ini
-    /// dikalibrasi dari sample data nyata (lihat PRD Bagian 13.2), bukan
-    /// contoh hipotetis. Confidence sengaja tidak 1.0 karena ini tetap
-    /// heuristik, bukan pemetaan pasti.
-    /// </summary>
-    private static (string? Field, double Confidence) TryClassifyByValuePattern(string rawValue)
-    {
-        string value = rawValue.Trim();
-        if (value.Length == 0) return (null, 0);
-
-        // "63,480.00", "268,570.00", dst.
-        if (PricePattern.IsMatch(value))
-            return ("price", 0.85);
-
-        // "4.0 KT", "100 pair" — bare number TANPA unit sengaja tidak
-        // dianggap quantity karena ambigu dengan nomor urut baris ("No").
-        if (QuantityWithUnitPattern.IsMatch(value))
-            return ("quantity", 0.85);
-
-        string lowerValue = value.ToLowerInvariant();
-        if (value.Any(char.IsDigit) && MonthNames.Any(m => lowerValue.Contains(m)))
-            return ("document_date", 0.7);
-
-        // Kode alfanumerik tanpa spasi, mengandung digit, panjang wajar,
-        // dan BUKAN pola harga — mis. "04905-37220", "047733725000",
-        // "47041F101000", "TB60573N".
-        if (value.Length >= 6
-            && !value.Contains(' ')
-            && value.Any(char.IsDigit)
-            && !PricePattern.IsMatch(value)
-            && PartNumberPattern.IsMatch(value))
-            return ("part_number", 0.75);
-
-        return (null, 0);
-    }
-
-    private async Task EnsureCanonicalEmbeddingsAsync(string[] canonicalFields)
-    {
-        _canonicalFieldEmbeddings ??= new Dictionary<string, float[]>();
-        var missing = canonicalFields.Where(f => !_canonicalFieldEmbeddings.ContainsKey(f)).ToList();
-        if (missing.Count == 0) return;
-
-        foreach (var field in missing)
-        {
-            _canonicalFieldEmbeddings[field] = await GetEmbeddingAsync(field);
-        }
-    }
-
-    private async Task<float[]> GetEmbeddingAsync(string text)
-    {
-        var response = await _embedClient.EmbedAsync(text);
-        return response.Embeddings[0];
-    }
-
-    private async Task<(string Field, double Score)> FindClosestFieldByEmbeddingAsync(string label, string[] canonicalFields)
-    {
-        float[] labelEmbedding = await GetEmbeddingAsync(label);
-
-        string bestField = canonicalFields[0];
-        double bestScore = double.MinValue;
-        foreach (var field in canonicalFields)
-        {
-            double score = CosineSimilarity(labelEmbedding, _canonicalFieldEmbeddings![field]);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestField = field;
-            }
-        }
-        return (bestField, bestScore);
-    }
-
-    private async Task<(string Field, double Confidence)> AskLlmForFieldAsync(string label, string value, string[] canonicalFields)
-    {
-        // Prompt few-shot (contoh Input -> Output konkret), BUKAN daftar
-        // aturan abstrak seperti sebelumnya. Model kecil (1.5B) terbukti
-        // jauh lebih akurat mengikuti contoh nyata daripada aturan
-        // if-else tertulis — sebelumnya model ini nyaris selalu menjawab
-        // "price" untuk apa pun karena kebingungan dengan prompt lama.
         string prompt = $"""
-            Kamu mengklasifikasikan satu data dari invoice ke salah satu field baku berikut:
-            {string.Join(", ", canonicalFields)}
+            Kamu mengekstrak data terstruktur dari teks hasil OCR sebuah dokumen {DocTypeLabel(docType)}.
+            Teks OCR mungkin ada typo kecil atau urutan sedikit acak — pakai konteks untuk tetap
+            mengenali field yang benar.
 
-            Contoh:
-            "CUP KIT, WHEEL CYLINDER PISTON, FR" -> part_name
-            "04905-37220" -> part_number
-            "63,480.00" -> price
-            "4.0 KT" -> quantity
-            "PT. AKEBONO BRAKE ASTRA INDONESIA" -> supplier_name
+            ATURAN PENTING:
+            - Salin nilai (terutama angka: harga, jumlah, nomor) PERSIS seperti tertulis di teks OCR.
+              JANGAN mengubah format, membulatkan, atau menebak angka yang tidak ada di teks.
+            - Kalau suatu field tidak ditemukan di teks, isi dengan null.
+            - Balas HANYA dengan JSON valid sesuai skema berikut, tanpa teks lain apa pun, tanpa
+              markdown code fence:
+            {schemaHint}
 
-            Data yang perlu diklasifikasi:
-            Label (mungkin kosong/tidak akurat): "{label}"
-            Isi/Value: "{value}"
-
-            Jawab HANYA dengan satu nama field baku dari daftar di atas, tanpa tanda kutip atau penjelasan apa pun.
+            Teks OCR:
+            \"\"\"
+            {rawText}
+            \"\"\"
             """;
 
         var chat = new Chat(_chatClient);
@@ -254,22 +73,91 @@ public class CleaningService : ICleaningService
         {
             responseBuilder.Append(token);
         }
-        string answer = responseBuilder.ToString().Trim().Trim('"', '.', ' ');
 
-        var matched = canonicalFields.FirstOrDefault(f => string.Equals(f, answer, StringComparison.OrdinalIgnoreCase));
-        return matched != null ? (matched, 0.6) : (canonicalFields[0], 0.3);
+        try
+        {
+            string rawJson = ExtractJsonBlock(responseBuilder.ToString());
+            using var doc = JsonDocument.Parse(rawJson);
+            return ParseCleanResponse(doc.RootElement, docType);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "LLM tidak mengembalikan JSON valid untuk dokumen tipe {DocType}. Raw output: {Raw}",
+                docType, responseBuilder.ToString());
+            // Dikembalikan kosong, bukan crash — dokumen ini otomatis dapat
+            // confidence rendah di tahap matching dan masuk antrian review.
+            return new CleanResponse(new Dictionary<string, string>(), new List<CleanedLineItem>());
+        }
     }
 
-    private static double CosineSimilarity(float[] a, float[] b)
+    private static string DocTypeLabel(DocumentType docType) => docType switch
     {
-        double dot = 0, normA = 0, normB = 0;
-        for (int i = 0; i < a.Length; i++)
+        DocumentType.Invoice => "invoice",
+        DocumentType.DeliveryNote => "surat jalan/delivery note",
+        DocumentType.TaxInvoice => "faktur pajak",
+        _ => "dokumen"
+    };
+
+    /// <summary>Model kecil kadang membungkus JSON dengan teks tambahan
+    /// atau code fence markdown meski sudah diminta jangan — ambil blok
+    /// { ... } terluar saja supaya parsing tetap jalan.</summary>
+    private static string ExtractJsonBlock(string text)
+    {
+        int start = text.IndexOf('{');
+        int end = text.LastIndexOf('}');
+        if (start == -1 || end == -1 || end <= start)
         {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
+            throw new JsonException("Tidak ditemukan blok JSON pada respons LLM.");
         }
-        if (normA == 0 || normB == 0) return 0;
-        return dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
+        return text.Substring(start, end - start + 1);
+    }
+
+    private static CleanResponse ParseCleanResponse(JsonElement root, DocumentType docType)
+    {
+        var header = new Dictionary<string, string>();
+        string[] headerKeys = docType switch
+        {
+            DocumentType.Invoice => ["invoice_number", "invoice_date", "supplier_name"],
+            DocumentType.DeliveryNote => ["delivery_note_number", "delivery_date", "supplier_name"],
+            DocumentType.TaxInvoice => ["tax_invoice_number", "tax_invoice_date", "supplier_name", "tax_amount"],
+            _ => []
+        };
+
+        foreach (var key in headerKeys)
+        {
+            if (root.TryGetProperty(key, out var val) && val.ValueKind == JsonValueKind.String)
+            {
+                header[key] = val.GetString() ?? "";
+            }
+        }
+
+        var lineItems = new List<CleanedLineItem>();
+        if (root.TryGetProperty("line_items", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                lineItems.Add(new CleanedLineItem(
+                    PartNumber: GetStringOrEmpty(item, "part_number"),
+                    PartName: GetStringOrEmpty(item, "part_name"),
+                    Quantity: GetStringOrEmpty(item, "quantity"),
+                    Price: GetStringOrEmpty(item, "price")
+                ));
+            }
+        }
+
+        // TODO (belum diimplementasi): validasi murah terhadap halusinasi —
+        // cek tiap angka (price/quantity/tax_amount) yang dikembalikan LLM
+        // benar-benar muncul di rawText asli (toleransi spasi/pemisah
+        // ribuan). Ini pengaman terhadap kemungkinan LLM "membetulkan" atau
+        // salah menyalin angka alih-alih menyalin persis dari OCR.
+
+        return new CleanResponse(header, lineItems);
+    }
+
+    private static string GetStringOrEmpty(JsonElement item, string key)
+    {
+        return item.TryGetProperty(key, out var val) && val.ValueKind == JsonValueKind.String
+            ? val.GetString() ?? ""
+            : "";
     }
 }

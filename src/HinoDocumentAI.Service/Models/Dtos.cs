@@ -1,62 +1,25 @@
-﻿using System.Text.Json.Serialization;
-
-namespace HinoDocumentAI.Service.Models;
+﻿namespace HinoDocumentAI.Service.Models;
 
 // ---------- /extract ----------
 
-public record ExtractedField(
-    string Label, 
-    string Value, 
-    double? Confidence = null,
-    double? BoundingBoxX = null,  // Posisi horizontal
-    double? BoundingBoxY = null,  // Posisi vertikal
-    double? Width = null,         // Lebar area teks
-    double? Height = null         // Tinggi area teks
-    );
+public record OcrPage(int PageNumber, Services.DocumentType DetectedType, string RawText);
 
-public record ExtractRequest(string DocumentTypeHint); // hint opsional dari .NET Invoice Portal, tetap divalidasi ulang oleh classifier
-
-public record ExtractResponse(
-    Services.DocumentType DetectedDocumentType,
-    string RawText,
-    List<ExtractedField> Fields
-);
+public record ExtractResponse(List<OcrPage> Pages);
 
 // ---------- /clean ----------
 
-public record CleanRequest(
-    [property: JsonPropertyName("detectedDocumentType")]
-    Services.DocumentType DocumentType,
-    List<ExtractedField> Fields
-);
+public record CleanRequest(Services.DocumentType DocumentType, string RawText);
 
-public record CleanedField(
-    string CanonicalField,
-    string Value,
-    string SourceLabel,
-    double Confidence,
-    string Method // "dictionary" | "embedding" | "llm_fallback"
-);
+public record CleanedLineItem(string PartNumber, string PartName, string Quantity, string Price);
 
-public record CleanResponse(List<CleanedField> CleanedData);
+public record CleanResponse(Dictionary<string, string> HeaderFields, List<CleanedLineItem> LineItems);
 
-// ---------- /match ----------
+// ---------- /match (BELUM DIUBAH — lihat catatan di bawah) ----------
 
-public record MatchRequest(
-    List<CleanedField> CleanedData,
-    Dictionary<string, string> HesData // key = canonical field, value = data dari sistem HES
-);
+public record CleanedField(string CanonicalField, string Value, string SourceLabel, double Confidence, string Method);
 
-public record MatchDetail(
-    string Field,
-    string ExtractedValue,
-    string HesValue,
-    bool IsMatch,
-    double Confidence
-);
+public record MatchRequest(List<CleanedField> CleanedData, Dictionary<string, string> HesData);
 
-public record MatchResponse(
-    bool OverallMatch,
-    double OverallConfidence,
-    List<MatchDetail> Details
-);
+public record MatchDetail(string Field, string ExtractedValue, string HesValue, bool IsMatch, double Confidence);
+
+public record MatchResponse(bool OverallMatch, double OverallConfidence, List<MatchDetail> Details);

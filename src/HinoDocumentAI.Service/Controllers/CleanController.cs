@@ -16,14 +16,13 @@ public class CleanController : ControllerBase
     }
 
     /// <summary>
-    /// Normalisasi label mentah hasil OCR ke field baku. Urutan metode:
-    /// dictionary sinonim -> embedding (bge-m3) -> LLM fallback (qwen2.5),
-    /// lihat CleaningService untuk detail.
+    /// Strukturisasi teks mentah satu halaman jadi field baku, langsung
+    /// oleh LLM (bukan lagi cascade dictionary/pattern/embedding manual).
     /// </summary>
     [HttpPost]
     public async Task<ActionResult<CleanResponse>> Clean([FromBody] CleanRequest request)
     {
-        var cleaned = await _cleaningService.CleanAsync(request.DocumentType, request.Fields);
-        return Ok(new CleanResponse(cleaned));
+        var result = await _cleaningService.CleanAsync(request.DocumentType, request.RawText);
+        return Ok(result);
     }
 }

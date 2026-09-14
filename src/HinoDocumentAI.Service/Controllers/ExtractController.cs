@@ -1,10 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using HinoDocumentAI.Service.Models;
 using HinoDocumentAI.Service.Services;
-using Microsoft.AspNetCore.Cors.Infrastructure;
-using System.Linq;
-using System.Xml.Linq;
-
 
 namespace HinoDocumentAI.Service.Controllers;
 
@@ -22,11 +18,13 @@ public class ExtractController : ControllerBase
     }
 
     /// <summary>
-    /// Terima file scan (invoice/faktur pajak/surat jalan) dari Invoice
-    /// Portal, kembalikan raw text + field mentah hasil OCR.
+    /// Ekstrak teks mentah per halaman + klasifikasi jenis dokumen per
+    /// halaman. Halaman dengan DetectedType=Unknown (mis. lampiran surat,
+    /// instruksi internal, dst.) sebaiknya di-skip oleh pemanggil sebelum
+    /// dikirim ke /clean — jangan dipaksa diproses.
     /// </summary>
     [HttpPost]
-    public async Task<ActionResult<ExtractResponse>> Extract(IFormFile file, [FromForm] string? documentTypeHint)
+    public async Task<ActionResult<ExtractResponse>> Extract(IFormFile file)
     {
         if (file == null || file.Length == 0)
         {
@@ -41,31 +39,12 @@ public class ExtractController : ControllerBase
                 await file.CopyToAsync(stream);
             }
 
-            var (rawText, fields) = await _ocrService.ExtractAsync(tempPath);
+            var pages = await _ocrService.ExtractPagesAsync(tempPath);
+            var classified = pages
+                .Select(p => new OcrPage(p.PageNumber, DocumentClassifier.Classify(p.RawText), p.RawText))
+                .ToList();
 
-            // TODO (FR-8): jalankan klasifikasi jenis dokumen di sini
-            // berdasarkan CanonicalFields.DocumentTypeKeywords dan isi
-            // rawText, alih-alih langsung memakai documentTypeHint dari
-            // caller mentah-mentah — hint dari .NET Invoice Portal tetap
-            // berguna sebagai sinyal tambahan, tapi divalidasi ulang,
-            // karena satu file bisa berisi jenis dokumen yang tidak
-            // terduga (lihat PRD Bagian 13.2 poin 5 — temuan dokumen
-            // yang ternyata tidak sesuai konteksnya).
-            //var detectedType = DocumentType.Unknown;
-
-            //implementasi fr-8
-            var detectedType = DetectDocumentType(rawText);
-
-            if (detectedType == DocumentType.Unknown && !string.IsNullOrWhiteSpace(documentTypeHint))
-            {
-                Enum.TryParse(documentTypeHint, ignoreCase: true, out detectedType);
-            }
-
-            return Ok(new ExtractResponse(
-                DetectedDocumentType: detectedType,
-                RawText: rawText,
-                Fields: fields
-            ));
+            return Ok(new ExtractResponse(classified));
         }
         finally
         {
@@ -74,31 +53,5 @@ public class ExtractController : ControllerBase
                 System.IO.File.Delete(tempPath);
             }
         }
-    }
-
-    /// <summary>
-    /// FR-8: Mendeteksi jenis dokumen berdasarkan pencocokan kata kunci 
-    /// yang didefinisikan di CanonicalFields.DocumentTypeKeywords.
-    /// </summary>
-    private DocumentType DetectDocumentType(string rawText)
-    {
-        if (string.IsNullOrWhiteSpace(rawText))
-        {
-            return DocumentType.Unknown;
-        }
-
-        string lowerText = rawText.ToLowerInvariant();
-
-        // Iterasi melalui dictionary keyword
-        foreach (var kvp in CanonicalFields.DocumentTypeKeywords)
-        {
-            // Jika salah satu keyword untuk jenis dokumen ini ditemukan dalam teks
-            if (kvp.Value.Any(keyword => lowerText.Contains(keyword.ToLowerInvariant())))
-            {
-                return kvp.Key;
-            }
-        }
-
-        return DocumentType.Unknown;
     }
 }
