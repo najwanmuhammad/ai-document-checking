@@ -1,10 +1,8 @@
 ﻿namespace HinoDocumentAI.Service.Services;
 
-/// <summary>
 /// Jenis dokumen yang didukung. Dipakai untuk klasifikasi halaman (FR-8)
 /// sebelum ekstraksi field, karena satu PDF bisa berisi lebih dari satu
-/// jenis dokumen atau halaman tidak relevan (lihat PRD Bagian 13.2).
-/// </summary>
+/// jenis dokumen atau halaman tidak relevan (PRD 13.2).
 public enum DocumentType
 {
     Unknown,
@@ -13,25 +11,56 @@ public enum DocumentType
     TaxInvoice
 }
 
-/// <summary>
 /// Daftar field baku (canonical fields) per jenis dokumen, dipisah
-/// header (satu nilai per dokumen) vs line-item (bisa berulang per baris
-/// barang) — lihat PRD Bagian 13.1.
-/// </summary>
+/// header (satu nilai per dokumen) vs line-item (bisa berulang per baris barang) - PRD 13.1.
 public static class CanonicalFields
 {
     public static readonly string[] InvoiceHeader =
-        ["invoice_number", "invoice_date", "supplier_name"];
+        [
+            "supplier_name",
+            "invoice_number",
+            "invoice_date",
+            "sub_total_amount",
+            "taxable_base",
+            "tax_amount", 
+            "total_amount", 
+            "signer_name",
+            "signer_position"
+        ];
 
     public static readonly string[] DeliveryNoteHeader =
-        ["delivery_note_number", "delivery_date", "supplier_name"];
+        [
+            "supplier_name",
+            "delivery_note_number", 
+            "delivery_note_date"
+        ];
 
     public static readonly string[] TaxInvoiceHeader =
-        ["tax_invoice_number", "tax_invoice_date", "supplier_name", "tax_amount"];
+        [
+            "supplier_name",
+            "tax_invoice_number",
+            "tax_invoice_date",
+            "sub_total_amount",
+            "discount",
+            "down_payment",
+            "taxable_base",
+            "tax_amount",
+            "luxury_goods_sales_tax",
+            "signer_name"
+        ];
 
-    // Sama untuk ketiga jenis dokumen (quantity opsional untuk faktur pajak)
+    // invoice lengkap terpakai semua.
+    // dn tidak ada price dan amount.
+    // faktur pajak ada semua tetapi jadi satu di kolom nama barang kena pajak/jasa kena pajak,
+    // amount-nya ada di kolom terpisah yaitu Harga jual/penggantian/uang muka/termin (Rp)
     public static readonly string[] LineItem =
-        ["part_number", "part_name", "quantity", "price"];
+        [
+            "part_number", 
+            "part_name", 
+            "quantity", 
+            "price", 
+            "amount"
+        ];
 
     /// <summary>
     /// Kata kunci untuk klasifikasi jenis dokumen per halaman (FR-8).
@@ -48,23 +77,20 @@ public static class CanonicalFields
         ],
         [DocumentType.DeliveryNote] =
         [
-            "delivery slip", "packing slip", "delivery order", "shipping note",
-            "surat jalan", "good received report" // GR biasanya dari sisi penerima, tapi sering menyertai proses delivery
+            "delivery slip", "packing slip", "delivery order", "surat jalan"
         ],
         [DocumentType.TaxInvoice] =
         [
-            "faktur pajak", "kode dan nomor seri faktur pajak"
+            "faktur pajak"
         ],
     };
 
     /// <summary>
     /// Dictionary sinonim untuk label kolom mentah -> field baku, dicek
-    /// LEBIH DULU sebelum fallback ke embedding similarity (bge-m3) atau
-    /// LLM (qwen2.5). Mengurangi panggilan Ollama untuk kasus yang sudah
+    /// LEBIH DULU sebelum fallback ke AI LLM. Mengurangi panggilan Ollama untuk kasus yang sudah
     /// pasti/sering muncul.
     ///
-    /// Semua entri di bawah adalah temuan NYATA dari sample data (bukan
-    /// contoh hipotetis) — lihat PRD Bagian 13.2:
+    /// Semua entri di bawah adalah temuan NYATA dari sample data — lihat PRD Bagian 13.2:
     /// - "Plu" (Rukun Sejahtera) = kode part, sementara Akebono/Exedy
     ///   menggabungkannya ke deskripsi atau kolom "Model/Type" / "EXD NO."
     /// - Exedy punya DUA kolom kode part: "EXD NO." (kode internal supplier,
@@ -100,6 +126,9 @@ public static class CanonicalFields
         ["price"] = "price",
         ["harga satuan"] = "price",
         ["price (idr)"] = "price",
+        ["amount"] = "amount",
+        ["jumlah harga jual"] = "sub_total_amount",
+        ["harga jual"] = "sub_total_amount",
 
         // Nomor dokumen (akan dipetakan ke header field yang sesuai
         // berdasarkan DocumentType hasil klasifikasi, bukan statis di sini)
@@ -115,6 +144,13 @@ public static class CanonicalFields
         ["jumlah ppn (pajak pertambahan nilai)"] = "tax_amount",
         ["v.a.t"] = "tax_amount",
         ["vat"] = "tax_amount",
+        ["ppn"] = "tax_amount",
+        ["value added"] = "tax_amount",
+        ["total harga"] = "total_amount",
+        ["total invoice"] = "total_amount",
+        ["ditandatangani oleh"] = "signer_name",
+        ["nama penanda tangan"] = "signer_name",
+        ["jabatan"] = "signer_position",
     };
 
     /// <summary>

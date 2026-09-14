@@ -10,7 +10,7 @@ public record ExtractResponse(List<OcrPage> Pages);
 
 public record CleanRequest(Services.DocumentType DocumentType, string RawText);
 
-public record CleanedLineItem(string PartNumber, string PartName, string Quantity, string Price);
+public record CleanedLineItem(string PartNumber, string PartName, string Quantity, string Price, string Amount);
 
 public record CleanResponse(Dictionary<string, string> HeaderFields, List<CleanedLineItem> LineItems);
 

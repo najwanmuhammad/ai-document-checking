@@ -35,10 +35,12 @@ public class CleaningService : ICleaningService
         {
             DocumentType.Invoice => """
                 {"invoice_number": "...", "invoice_date": "...", "supplier_name": "...",
-                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "...", "price": "..."}]}
+                 "sub_total_amount": "...", "tax_amount": "...", "total_amount": "...",
+                 "signer_name": "...", "signer_position": "...",
+                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "...", "price": "...", "amount": "..."}]}
                 """,
             DocumentType.DeliveryNote => """
-                {"delivery_note_number": "...", "delivery_date": "...", "supplier_name": "...",
+                {"delivery_note_number": "...", "delivery_note_date": "...", "supplier_name": "...",
                  "line_items": [{"part_number": "...", "part_name": "...", "quantity": "..."}]}
                 """,
             DocumentType.TaxInvoice => """
@@ -117,8 +119,11 @@ public class CleaningService : ICleaningService
         var header = new Dictionary<string, string>();
         string[] headerKeys = docType switch
         {
-            DocumentType.Invoice => ["invoice_number", "invoice_date", "supplier_name"],
-            DocumentType.DeliveryNote => ["delivery_note_number", "delivery_date", "supplier_name"],
+            DocumentType.Invoice => [
+                "invoice_number", "invoice_date", "supplier_name", "sub_total_amount", "tax_amount",
+                "total_amount", "signer_name", "signer_position"
+            ],
+            DocumentType.DeliveryNote => ["delivery_note_number", "delivery_note_date", "supplier_name"],
             DocumentType.TaxInvoice => ["tax_invoice_number", "tax_invoice_date", "supplier_name", "tax_amount"],
             _ => []
         };
@@ -140,7 +145,8 @@ public class CleaningService : ICleaningService
                     PartNumber: GetStringOrEmpty(item, "part_number"),
                     PartName: GetStringOrEmpty(item, "part_name"),
                     Quantity: GetStringOrEmpty(item, "quantity"),
-                    Price: GetStringOrEmpty(item, "price")
+                    Price: GetStringOrEmpty(item, "price"),
+                    Amount: GetStringOrEmpty(item, "amount")
                 ));
             }
         }

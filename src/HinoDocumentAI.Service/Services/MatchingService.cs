@@ -19,12 +19,12 @@ public class MatchingService : IMatchingService
 {
     private static readonly HashSet<string> NumericFields = new(StringComparer.OrdinalIgnoreCase)
     {
-        "quantity", "price", "tax_amount"
+        "quantity", "price", "amount", "sub_total_amount", "tax_amount", "total_amount"
     };
 
     private static readonly HashSet<string> DateFields = new(StringComparer.OrdinalIgnoreCase)
     {
-        "invoice_date", "delivery_date", "tax_invoice_date"
+        "invoice_date", "delivery_note_date", "tax_invoice_date"
     };
 
     public MatchResponse Match(List<CleanedField> cleanedData, Dictionary<string, string> hesData)
