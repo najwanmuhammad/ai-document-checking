@@ -118,36 +118,186 @@ public class OcrService : IOcrService, IDisposable
 
         //return (result.Text, fields);
 
-        var fields = result.Regions
-            .Select(r =>
-            {
-                // 1. Ambil nilai score asli
-                double safeScore = r.Score;
+        //var fields = result.Regions
+        //    .Select(r =>
+        //    {
+        //        // 1. Ambil nilai score asli
+        //        double safeScore = r.Score;
 
-                // 2. Sanitasi: Jika NaN atau Infinity, ubah menjadi 0.0 agar valid untuk JSON
-                if (double.IsNaN(safeScore) || double.IsInfinity(safeScore))
-                {
-                    safeScore = 0.0;
-                }
+        //        // 2. Sanitasi: Jika NaN atau Infinity, ubah menjadi 0.0 agar valid untuk JSON
+        //        if (double.IsNaN(safeScore) || double.IsInfinity(safeScore))
+        //        {
+        //            safeScore = 0.0;
+        //        }
 
-                // 3. Pastikan Value tidak null untuk keamanan tambahan
-                string safeText = r.Text ?? string.Empty;
+        //        // 3. Pastikan Value tidak null untuk keamanan tambahan
+        //        string safeText = r.Text ?? string.Empty;
 
-                return new ExtractedField(
-                    Label: "", 
-                    Value: safeText, 
-                    Confidence: safeScore,
-                    // Ambil koordinat dari RotatedRect milik PaddleSharp
-                    BoundingBoxX: r.Rect.Center.X,
-                    BoundingBoxY: r.Rect.Center.Y,
-                    Width: r.Rect.Size.Width,
-                    Height: r.Rect.Size.Height
-                );
-            })
-            .ToList();
+        //        return new ExtractedField(
+        //            Label: "",
+        //            Value: safeText, 
+        //            Confidence: safeScore,
+        //            // Ambil koordinat dari RotatedRect milik PaddleSharp
+        //            BoundingBoxX: r.Rect.Center.X,
+        //            BoundingBoxY: r.Rect.Center.Y,
+        //            Width: r.Rect.Size.Width,
+        //            Height: r.Rect.Size.Height
+        //        );
+        //    })
+        //    .ToList();
+
+        var fields = GroupIntoKeyValue(result.Regions.ToList());
 
         // Pastikan Text utama juga tidak null
         return (result.Text ?? string.Empty, fields);
+    }
+
+    //helper
+    private List<ExtractedField> GroupIntoKeyValue(List<PaddleOcrResultRegion> regions)
+    {
+        var fields = new List<ExtractedField>();
+
+        // Urutkan region dari atas ke bawah (Y),
+        // lalu kiri ke kanan (X)
+        var sorted = regions
+            .OrderBy(r => SafeDouble(r.Rect.Center.Y) ?? double.MaxValue)
+            .ThenBy(r => SafeDouble(r.Rect.Center.X) ?? double.MaxValue)
+            .ToList();
+
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var current = sorted[i];
+
+            string text = current.Text?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrEmpty(text))
+                continue;
+
+            // Sanitasi data current
+            double? currentScore = SafeDouble(current.Score);
+            double? currentX = SafeDouble(current.Rect.Center.X);
+            double? currentY = SafeDouble(current.Rect.Center.Y);
+            double? currentWidth = SafeDouble(current.Rect.Size.Width);
+            double? currentHeight = SafeDouble(current.Rect.Size.Height);
+
+            // Cek apakah teks ini adalah kandidat Label
+            if (IsCandidateLabel(text))
+            {
+                bool foundValue = false;
+
+                // Cari value di 3 region berikutnya
+                for (int j = i + 1; j < Math.Min(i + 4, sorted.Count); j++)
+                {
+                    var next = sorted[j];
+
+                    string nextText = next.Text?.Trim() ?? string.Empty;
+
+                    if (string.IsNullOrEmpty(nextText))
+                        continue;
+
+                    // Jika region berikutnya adalah label lain,
+                    // berhenti mencari
+                    if (IsCandidateLabel(nextText))
+                        break;
+
+                    double? nextScore = SafeDouble(next.Score);
+
+                    // Confidence = nilai terkecil dari label dan value.
+                    // Kalau salah satunya invalid, hasilnya null.
+                    double? confidence = GetMinimumConfidence(
+                        currentScore,
+                        nextScore
+                    );
+
+                    fields.Add(new ExtractedField(
+                        Label: text,
+                        Value: nextText,
+                        Confidence: confidence,
+                        BoundingBoxX: currentX,
+                        BoundingBoxY: currentY,
+                        Width: currentWidth,
+                        Height: currentHeight
+                    ));
+
+                    i = j;
+                    foundValue = true;
+                    break;
+                }
+
+                if (!foundValue)
+                {
+                    fields.Add(new ExtractedField(
+                        Label: text,
+                        Value: "[NILAI_TIDAK_DITEMUKAN]",
+                        Confidence: currentScore,
+                        BoundingBoxX: currentX,
+                        BoundingBoxY: currentY,
+                        Width: currentWidth,
+                        Height: currentHeight
+                    ));
+                }
+            }
+            else
+            {
+                // Teks bukan label yang dikenali
+                fields.Add(new ExtractedField(
+                    Label: "unknown",
+                    Value: text,
+                    Confidence: currentScore,
+                    BoundingBoxX: currentX,
+                    BoundingBoxY: currentY,
+                    Width: currentWidth,
+                    Height: currentHeight
+                ));
+            }
+        }
+
+        return fields;
+    }
+
+    private static double? SafeDouble(double value)
+    {
+        return double.IsFinite(value)
+            ? value
+            : null;
+    }
+
+    private static double? GetMinimumConfidence(
+        double? first,
+        double? second)
+    {
+        if (!first.HasValue || !second.HasValue)
+            return first ?? second;
+
+        return Math.Min(first.Value, second.Value);
+    }
+
+
+    //helper
+    private static readonly string[] CommonHeaderWords =
+    {
+        "no", "no.", "number", "part", "description", "nama", "jumlah", "qty",
+        "quantity", "harga", "price", "amount", "date", "tgl", "tanggal", "kode"
+    };
+
+    private bool IsCandidateLabel(string text)
+    {
+        var normalized = text.Trim().ToLowerInvariant().TrimEnd(':', '.', '/');
+        if (normalized.Length == 0 || normalized.Length >= 40) return false;
+
+        // 1. Exact match dengan dictionary sinonim — paling presisi
+        if (CanonicalFields.KnownSynonyms.ContainsKey(normalized)) return true;
+
+        // 2. Match sebagai KATA UTUH, BUKAN substring bebas.
+        // Versi sebelumnya pakai lower.Contains("no"), yang salah tangkap kata
+        // seperti "akebono" / "www.akebono-astra.co.id" cuma karena kebetulan
+        // mengandung huruf "no" di tengah kata — itu sumber utama hasil ngaco
+        // kemarin. Sekarang keyword harus jadi TOKEN sendiri yang dipisah
+        // spasi/tanda baca umum, bukan potongan sembarang tempat.
+        var words = normalized.Split(
+            new[] { ' ', '/', '-', '.', ':' },
+            StringSplitOptions.RemoveEmptyEntries);
+        return words.Any(w => CommonHeaderWords.Contains(w));
     }
 
     private static Mat SkBitmapToMat(SKBitmap bitmap)

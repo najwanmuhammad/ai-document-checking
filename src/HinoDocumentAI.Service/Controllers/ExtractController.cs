@@ -2,6 +2,7 @@
 using HinoDocumentAI.Service.Models;
 using HinoDocumentAI.Service.Services;
 using Microsoft.AspNetCore.Cors.Infrastructure;
+using System.Linq;
 using System.Xml.Linq;
 
 
@@ -50,7 +51,15 @@ public class ExtractController : ControllerBase
             // karena satu file bisa berisi jenis dokumen yang tidak
             // terduga (lihat PRD Bagian 13.2 poin 5 — temuan dokumen
             // yang ternyata tidak sesuai konteksnya).
-            var detectedType = DocumentType.Unknown;
+            //var detectedType = DocumentType.Unknown;
+
+            //implementasi fr-8
+            var detectedType = DetectDocumentType(rawText);
+
+            if (detectedType == DocumentType.Unknown && !string.IsNullOrWhiteSpace(documentTypeHint))
+            {
+                Enum.TryParse(documentTypeHint, ignoreCase: true, out detectedType);
+            }
 
             return Ok(new ExtractResponse(
                 DetectedDocumentType: detectedType,
@@ -65,5 +74,31 @@ public class ExtractController : ControllerBase
                 System.IO.File.Delete(tempPath);
             }
         }
+    }
+
+    /// <summary>
+    /// FR-8: Mendeteksi jenis dokumen berdasarkan pencocokan kata kunci 
+    /// yang didefinisikan di CanonicalFields.DocumentTypeKeywords.
+    /// </summary>
+    private DocumentType DetectDocumentType(string rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return DocumentType.Unknown;
+        }
+
+        string lowerText = rawText.ToLowerInvariant();
+
+        // Iterasi melalui dictionary keyword
+        foreach (var kvp in CanonicalFields.DocumentTypeKeywords)
+        {
+            // Jika salah satu keyword untuk jenis dokumen ini ditemukan dalam teks
+            if (kvp.Value.Any(keyword => lowerText.Contains(keyword.ToLowerInvariant())))
+            {
+                return kvp.Key;
+            }
+        }
+
+        return DocumentType.Unknown;
     }
 }

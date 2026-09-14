@@ -1,4 +1,6 @@
-﻿namespace HinoDocumentAI.Service.Models;
+﻿using System.Text.Json.Serialization;
+
+namespace HinoDocumentAI.Service.Models;
 
 // ---------- /extract ----------
 
@@ -23,6 +25,7 @@ public record ExtractResponse(
 // ---------- /clean ----------
 
 public record CleanRequest(
+    [property: JsonPropertyName("detectedDocumentType")]
     Services.DocumentType DocumentType,
     List<ExtractedField> Fields
 );

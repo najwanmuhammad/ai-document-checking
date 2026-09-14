@@ -79,6 +79,7 @@ public static class CanonicalFields
         ["cust item no"] = "part_number",
         ["cust item code"] = "part_number",
         ["part no"] = "part_number",
+        ["part no."] = "part_number",
         // NOTE: "exd no" sengaja TIDAK dimasukkan — itu kode internal
         // supplier Exedy, bukan part_number versi Hino. Lihat catatan di atas.
 
@@ -87,6 +88,18 @@ public static class CanonicalFields
         ["nama barang"] = "part_name",
         ["cust item name"] = "part_name",
         ["barang / description"] = "part_name",
+        ["nama barang dan penjelasan"] = "part_name",
+
+        // Quantity
+        ["qty"] = "quantity",
+        ["jumlah"] = "quantity",
+        ["jumlah / qty"] = "quantity", // Dari JSON Anda
+        ["total qty"] = "quantity",
+
+        // Price
+        ["price"] = "price",
+        ["harga satuan"] = "price",
+        ["price (idr)"] = "price",
 
         // Nomor dokumen (akan dipetakan ke header field yang sesuai
         // berdasarkan DocumentType hasil klasifikasi, bukan statis di sini)
@@ -102,5 +115,17 @@ public static class CanonicalFields
         ["jumlah ppn (pajak pertambahan nilai)"] = "tax_amount",
         ["v.a.t"] = "tax_amount",
         ["vat"] = "tax_amount",
+    };
+
+    /// <summary>
+    /// Token hasil OCR yang tidak punya makna sendiri sebagai data (simbol
+    /// mata uang lepas, tanda baca lepas, dsb.) — dibuang sebelum masuk proses
+    /// cleaning, supaya tidak buang panggilan Ollama untuk hal yang jelas tidak
+    /// berguna. Ditemukan nyata di sample data: "Rp." sering terdeteksi sebagai
+    /// region terpisah dari angkanya sendiri.
+    /// </summary>
+    public static readonly HashSet<string> NoiseValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "rp", "rp.", "idr", "usd", "jpy", "-", "/", ":", ".", ","
     };
 }
