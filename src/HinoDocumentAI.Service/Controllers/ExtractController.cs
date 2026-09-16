@@ -17,12 +17,9 @@ public class ExtractController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>
-    /// Ekstrak teks mentah per halaman + klasifikasi jenis dokumen per
-    /// halaman. Halaman dengan DetectedType=Unknown (mis. lampiran surat,
-    /// instruksi internal, dst.) sebaiknya di-skip oleh pemanggil sebelum
-    /// dikirim ke /clean — jangan dipaksa diproses.
-    /// </summary>
+    /// Ekstrak teks mentah per halaman + klasifikasi jenis dokumen per halaman.
+    /// Halaman dengan DetectedType=Unknown (mis. lampiran surat, instruksi internal, dst.)
+    /// sebaiknya di-skip oleh pemanggil sebelum dikirim ke /clean.
     [HttpPost]
     public async Task<ActionResult<ExtractResponse>> Extract(IFormFile file)
     {

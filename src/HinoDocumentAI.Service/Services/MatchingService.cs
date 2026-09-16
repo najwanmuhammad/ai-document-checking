@@ -17,16 +17,6 @@ public interface IMatchingService
 /// </summary>
 public class MatchingService : IMatchingService
 {
-    private static readonly HashSet<string> NumericFields = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "quantity", "price", "amount", "sub_total_amount", "tax_amount", "total_amount"
-    };
-
-    private static readonly HashSet<string> DateFields = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "invoice_date", "delivery_note_date", "tax_invoice_date"
-    };
-
     public MatchResponse Match(List<CleanedField> cleanedData, Dictionary<string, string> hesData)
     {
         var details = new List<MatchDetail>();
@@ -57,7 +47,7 @@ public class MatchingService : IMatchingService
         string a = extractedValue.Trim();
         string b = hesValue.Trim();
 
-        if (NumericFields.Contains(field))
+        if (CanonicalFields.Numeric.Contains(field))
         {
             // TODO: perkuat normalisasi angka — sample data nyata memakai
             // format "Rp 63.480,00" (titik = ribuan, koma = desimal) yang
@@ -68,7 +58,7 @@ public class MatchingService : IMatchingService
             return (numericMatch, numericMatch ? 1.0 : 0.0);
         }
 
-        if (DateFields.Contains(field))
+        if (CanonicalFields.Date.Contains(field))
         {
             // TODO: tanggal di sample data muncul dalam banyak format
             // ("07/Aug/26", "21 July 2026", "07 Agustus 2026", bahkan

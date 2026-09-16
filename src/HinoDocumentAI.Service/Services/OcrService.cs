@@ -10,10 +10,6 @@ namespace HinoDocumentAI.Service.Services;
 
 public interface IOcrService
 {
-    /// <summary>Ekstrak teks mentah per halaman. Tidak lagi mencoba
-    /// memasangkan label/value di sini — itu sekarang tugas LLM di
-    /// CleaningService, karena posisi/heuristik terbukti tidak generalize
-    /// ke variasi layout supplier yang sangat beragam.</summary>
     Task<List<(int PageNumber, string RawText)>> ExtractPagesAsync(string filePath);
 }
 

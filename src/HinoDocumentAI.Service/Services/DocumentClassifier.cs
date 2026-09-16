@@ -1,13 +1,11 @@
 ﻿namespace HinoDocumentAI.Service.Services;
 
-/// <summary>
 /// Klasifikasi jenis dokumen PER HALAMAN (bukan per file), pakai fuzzy
 /// match supaya toleran typo kecil OCR (mis. "DELIVERY SLI" karena satu
 /// huruf terpotong saat deteksi). Ini juga yang menyelesaikan masalah
 /// "halaman lampiran ikut ke-extract padahal bukan invoice" — halaman yang
 /// tidak cocok kata kunci apa pun otomatis dapat DocumentType.Unknown dan
 /// tinggal di-skip oleh pemanggil.
-/// </summary>
 public static class DocumentClassifier
 {
     private const int FuzzyThreshold = 85;
@@ -16,8 +14,7 @@ public static class DocumentClassifier
     {
         if (string.IsNullOrWhiteSpace(rawText)) return DocumentType.Unknown;
 
-        // Faktur Pajak dicek lebih dulu — formatnya paling konsisten
-        // (format resmi e-Faktur DJP, lihat PRD Bagian 13.2).
+        // Faktur Pajak dicek lebih dulu karena formatnya sama semua
         foreach (var keyword in CanonicalFields.DocumentTypeKeywords[DocumentType.TaxInvoice])
         {
             if (ContainsFuzzy(rawText, keyword)) return DocumentType.TaxInvoice;

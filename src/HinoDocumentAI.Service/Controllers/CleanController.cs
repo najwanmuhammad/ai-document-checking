@@ -15,14 +15,31 @@ public class CleanController : ControllerBase
         _cleaningService = cleaningService;
     }
 
-    /// <summary>
-    /// Strukturisasi teks mentah satu halaman jadi field baku, langsung
-    /// oleh LLM (bukan lagi cascade dictionary/pattern/embedding manual).
-    /// </summary>
+    /// Strukturisasi teks mentah satu halaman jadi field baku, langsung oleh LLM.
     [HttpPost]
     public async Task<ActionResult<CleanResponse>> Clean([FromBody] CleanRequest request)
     {
-        var result = await _cleaningService.CleanAsync(request.DocumentType, request.RawText);
-        return Ok(result);
+        try
+        {
+            var result = await _cleaningService.CleanAsync(
+                request.DocumentType,
+                request.RawText,
+                HttpContext.RequestAborted);
+            return Ok(result);
+        }
+        catch (TimeoutException ex)
+        {
+            return StatusCode(StatusCodes.Status504GatewayTimeout, new
+            {
+                error = ex.Message
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new
+            {
+                error = ex.Message
+            });
+        }
     }
 }

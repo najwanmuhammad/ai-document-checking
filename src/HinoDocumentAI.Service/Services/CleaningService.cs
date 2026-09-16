@@ -1,67 +1,58 @@
 ﻿using System.Text.Json;
 using OllamaSharp;
+using OllamaSharp.Models.Chat;
 using HinoDocumentAI.Service.Models;
 
 namespace HinoDocumentAI.Service.Services;
 
 public interface ICleaningService
 {
-    Task<CleanResponse> CleanAsync(DocumentType docType, string rawText);
+    Task<CleanResponse> CleanAsync(
+        DocumentType docType,
+        string rawText,
+        CancellationToken cancellationToken = default);
 }
 
-/// <summary>
-/// Strukturisasi teks mentah OCR jadi field baku, langsung oleh LLM
-/// (qwen2.5:3b) — menggantikan pendekatan heuristik posisi yang terbukti
-/// tidak generalize ke variasi layout supplier (lihat PRD Bagian 13.2).
-/// Model dinaikkan dari 1.5B ke 3B karena tugas structuring jauh lebih
-/// berat dari sekadar klasifikasi satu label -> field.
-/// </summary>
+/// Strukturisasi teks mentah OCR jadi field baku, langsung oleh LLM.
 public class CleaningService : ICleaningService
 {
     private readonly OllamaApiClient _chatClient;
     private readonly ILogger<CleaningService> _logger;
+    private readonly TimeSpan _timeout;
 
     public CleaningService(IConfiguration config, ILogger<CleaningService> logger)
     {
         _logger = logger;
         var baseUrl = config["Ollama:BaseUrl"] ?? "http://localhost:11434";
-        var model = config["Ollama:StructuringModel"] ?? "qwen2.5:3b";
+        var model = config["Ollama:StructuringModel"] ?? "";
+        var timeoutSeconds = config.GetValue("Ollama:TimeoutSeconds", 120);
+        _timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds));
         _chatClient = new OllamaApiClient(baseUrl, model);
     }
 
-    public async Task<CleanResponse> CleanAsync(DocumentType docType, string rawText)
+    public async Task<CleanResponse> CleanAsync(
+        DocumentType docType,
+        string rawText,
+        CancellationToken cancellationToken = default)
     {
-        string schemaHint = docType switch
-        {
-            DocumentType.Invoice => """
-                {"invoice_number": "...", "invoice_date": "...", "supplier_name": "...",
-                 "sub_total_amount": "...", "tax_amount": "...", "total_amount": "...",
-                 "signer_name": "...", "signer_position": "...",
-                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "...", "price": "...", "amount": "..."}]}
-                """,
-            DocumentType.DeliveryNote => """
-                {"delivery_note_number": "...", "delivery_note_date": "...", "supplier_name": "...",
-                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "..."}]}
-                """,
-            DocumentType.TaxInvoice => """
-                {"tax_invoice_number": "...", "tax_invoice_date": "...", "supplier_name": "...", "tax_amount": "...",
-                 "line_items": [{"part_number": "...", "part_name": "...", "quantity": "..."}]}
-                """,
-            _ => throw new ArgumentOutOfRangeException(nameof(docType))
-        };
+        string schemaHint = BuildSchemaHint(docType);
 
         string prompt = $"""
             Kamu mengekstrak data terstruktur dari teks hasil OCR sebuah dokumen {DocTypeLabel(docType)}.
-            Teks OCR mungkin ada typo kecil atau urutan sedikit acak — pakai konteks untuk tetap
+            Teks OCR mungkin ada typo kecil atau urutan sedikit acak. pakai konteks untuk tetap
             mengenali field yang benar.
 
             ATURAN PENTING:
             - Salin nilai (terutama angka: harga, jumlah, nomor) PERSIS seperti tertulis di teks OCR.
               JANGAN mengubah format, membulatkan, atau menebak angka yang tidak ada di teks.
-            - Kalau suatu field tidak ditemukan di teks, isi dengan null.
-            - Balas HANYA dengan JSON valid sesuai skema berikut, tanpa teks lain apa pun, tanpa
+            - Kalau suatu field tidak ditemukan di teks, isi dengan null. Jangan gunakan "...".
+            - Untuk line_items, buat satu object per baris barang yang benar-benar terlihat pada OCR.
+            - Balas HANYA dengan satu object JSON valid sesuai skema berikut, tanpa teks lain apa pun, tanpa
               markdown code fence:
             {schemaHint}
+
+            Label yang umum muncul pada dokumen dan padanan field canonical:
+            {BuildSynonymHint(docType)}
 
             Teks OCR:
             \"\"\"
@@ -69,11 +60,44 @@ public class CleaningService : ICleaningService
             \"\"\"
             """;
 
-        var chat = new Chat(_chatClient);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_timeout);
+
         var responseBuilder = new System.Text.StringBuilder();
-        await foreach (var token in chat.SendAsync(prompt))
+        try
         {
-            responseBuilder.Append(token);
+            var request = new ChatRequest
+            {
+                Model = _chatClient.SelectedModel,
+                Messages = [new Message(ChatRole.User, prompt)],
+                Format = "json",
+                Stream = false,
+                Think = false
+            };
+
+            await foreach (var response in _chatClient.ChatAsync(request, timeoutCts.Token))
+            {
+                if (response?.Message?.Content is { Length: > 0 } content)
+                {
+                    responseBuilder.Append(content);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError(
+                "Cleaning timeout setelah {TimeoutSeconds} detik untuk dokumen tipe {DocType}.",
+                _timeout.TotalSeconds,
+                docType);
+            throw new TimeoutException("Ollama tidak menyelesaikan cleaning dalam batas waktu.");
+        }
+
+        if (responseBuilder.Length == 0)
+        {
+            _logger.LogError(
+                "Ollama mengembalikan response kosong untuk dokumen tipe {DocType}.",
+                docType);
+            throw new InvalidOperationException("Ollama mengembalikan response kosong. Periksa model dan endpoint Ollama.");
         }
 
         try
@@ -84,11 +108,14 @@ public class CleaningService : ICleaningService
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "LLM tidak mengembalikan JSON valid untuk dokumen tipe {DocType}. Raw output: {Raw}",
-                docType, responseBuilder.ToString());
-            // Dikembalikan kosong, bukan crash — dokumen ini otomatis dapat
-            // confidence rendah di tahap matching dan masuk antrian review.
-            return new CleanResponse(new Dictionary<string, string>(), new List<CleanedLineItem>());
+            _logger.LogWarning(
+                ex,
+                "LLM tidak mengembalikan JSON valid untuk dokumen tipe {DocType}. Output length: {OutputLength}.",
+                docType,
+                responseBuilder.Length);
+            throw new InvalidOperationException(
+                $"Ollama mengembalikan JSON cleaning yang tidak valid ({ex.Message}, output {responseBuilder.Length} karakter).",
+                ex);
         }
     }
 
@@ -100,35 +127,83 @@ public class CleaningService : ICleaningService
         _ => "dokumen"
     };
 
-    /// <summary>Model kecil kadang membungkus JSON dengan teks tambahan
-    /// atau code fence markdown meski sudah diminta jangan — ambil blok
-    /// { ... } terluar saja supaya parsing tetap jalan.</summary>
+    private static string BuildSchemaHint(DocumentType docType)
+    {
+        string header = string.Join(", ", CanonicalFields.GetHeader(docType)
+            .Select(field => $"\"{field}\": null"));
+        string lineItem = string.Join(", ", CanonicalFields.GetLineItems(docType)
+            .Select(field => $"\"{field}\": null"));
+
+        return $"{{{header}, \"line_items\": [{{{lineItem}}}]}}";
+    }
+
+    private static string BuildSynonymHint(DocumentType docType)
+    {
+        var supportedFields = CanonicalFields.GetHeader(docType)
+            .Concat(CanonicalFields.GetLineItems(docType))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return string.Join("; ", CanonicalFields.KnownSynonyms
+            .Where(pair => supportedFields.Contains(pair.Value))
+            .Select(pair => $"{pair.Key} => {pair.Value}"));
+    }
+
+    /// Mengambil object JSON pertama yang lengkap, termasuk bila model
+    /// membungkusnya dengan code fence atau teks tambahan.
     private static string ExtractJsonBlock(string text)
     {
         int start = text.IndexOf('{');
-        int end = text.LastIndexOf('}');
-        if (start == -1 || end == -1 || end <= start)
+        if (start < 0)
         {
             throw new JsonException("Tidak ditemukan blok JSON pada respons LLM.");
         }
-        return text.Substring(start, end - start + 1);
+
+        int depth = 0;
+        bool insideString = false;
+        bool escaped = false;
+        for (int index = start; index < text.Length; index++)
+        {
+            char current = text[index];
+
+            if (insideString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (current == '\\')
+                {
+                    escaped = true;
+                }
+                else if (current == '"')
+                {
+                    insideString = false;
+                }
+
+                continue;
+            }
+
+            if (current == '"')
+            {
+                insideString = true;
+            }
+            else if (current == '{')
+            {
+                depth++;
+            }
+            else if (current == '}' && --depth == 0)
+            {
+                return text.Substring(start, index - start + 1);
+            }
+        }
+
+        throw new JsonException("Object JSON dari respons LLM tidak lengkap.");
     }
 
     private static CleanResponse ParseCleanResponse(JsonElement root, DocumentType docType)
     {
         var header = new Dictionary<string, string>();
-        string[] headerKeys = docType switch
-        {
-            DocumentType.Invoice => [
-                "invoice_number", "invoice_date", "supplier_name", "sub_total_amount", "tax_amount",
-                "total_amount", "signer_name", "signer_position"
-            ],
-            DocumentType.DeliveryNote => ["delivery_note_number", "delivery_note_date", "supplier_name"],
-            DocumentType.TaxInvoice => ["tax_invoice_number", "tax_invoice_date", "supplier_name", "tax_amount"],
-            _ => []
-        };
-
-        foreach (var key in headerKeys)
+        foreach (var key in CanonicalFields.GetHeader(docType))
         {
             if (root.TryGetProperty(key, out var val) && val.ValueKind == JsonValueKind.String)
             {
@@ -137,16 +212,17 @@ public class CleaningService : ICleaningService
         }
 
         var lineItems = new List<CleanedLineItem>();
+        var lineItemFields = CanonicalFields.GetLineItems(docType);
         if (root.TryGetProperty("line_items", out var items) && items.ValueKind == JsonValueKind.Array)
         {
             foreach (var item in items.EnumerateArray())
             {
                 lineItems.Add(new CleanedLineItem(
-                    PartNumber: GetStringOrEmpty(item, "part_number"),
-                    PartName: GetStringOrEmpty(item, "part_name"),
-                    Quantity: GetStringOrEmpty(item, "quantity"),
-                    Price: GetStringOrEmpty(item, "price"),
-                    Amount: GetStringOrEmpty(item, "amount")
+                    PartNumber: GetOptionalString(item, lineItemFields, "part_number"),
+                    PartName: GetOptionalString(item, lineItemFields, "part_name"),
+                    Quantity: GetOptionalString(item, lineItemFields, "quantity"),
+                    Price: GetOptionalString(item, lineItemFields, "price"),
+                    Amount: GetOptionalString(item, lineItemFields, "amount")
                 ));
             }
         }
@@ -160,10 +236,18 @@ public class CleaningService : ICleaningService
         return new CleanResponse(header, lineItems);
     }
 
-    private static string GetStringOrEmpty(JsonElement item, string key)
+    private static string? GetOptionalString(
+        JsonElement item,
+        IReadOnlyList<string> supportedFields,
+        string fieldName)
     {
-        return item.TryGetProperty(key, out var val) && val.ValueKind == JsonValueKind.String
+        if (!supportedFields.Contains(fieldName, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return item.TryGetProperty(fieldName, out var val) && val.ValueKind == JsonValueKind.String
             ? val.GetString() ?? ""
-            : "";
+            : null;
     }
 }

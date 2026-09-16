@@ -2,7 +2,7 @@
 
 /// Jenis dokumen yang didukung. Dipakai untuk klasifikasi halaman (FR-8)
 /// sebelum ekstraksi field, karena satu PDF bisa berisi lebih dari satu
-/// jenis dokumen atau halaman tidak relevan (PRD 13.2).
+/// jenis dokumen atau halaman tidak relevan.
 public enum DocumentType
 {
     Unknown,
@@ -12,7 +12,7 @@ public enum DocumentType
 }
 
 /// Daftar field baku (canonical fields) per jenis dokumen, dipisah
-/// header (satu nilai per dokumen) vs line-item (bisa berulang per baris barang) - PRD 13.1.
+/// header (satu nilai per dokumen) vs line-item (bisa berulang per baris).
 public static class CanonicalFields
 {
     public static readonly string[] InvoiceHeader =
@@ -49,11 +49,8 @@ public static class CanonicalFields
             "signer_name"
         ];
 
-    // invoice lengkap terpakai semua.
-    // delivery note tidak ada price dan amount.
-    // faktur pajak ada semua tetapi jadi satu di kolom "nama barang kena pajak/jasa kena pajak",
-    // amount-nya ada di kolom terpisah yaitu "Harga jual/penggantian/uang muka/termin (Rp)".
-    public static readonly string[] LineItem =
+    // Field line item mengikuti struktur masing-masing jenis dokumen.
+    public static readonly string[] InvoiceLineItem =
         [
             "part_number", 
             "part_name", 
@@ -61,6 +58,67 @@ public static class CanonicalFields
             "price", 
             "amount"
         ];
+
+    public static readonly string[] DeliveryNoteLineItem =
+        [
+            "part_number",
+            "part_name",
+            "quantity"
+        ];
+
+    public static readonly string[] TaxInvoiceLineItem =
+        [
+            "part_number", 
+            "part_name", 
+            "quantity", 
+            "price", 
+            "amount"
+        ];
+
+    public static readonly HashSet<string> Numeric = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "quantity",
+        "price",
+        "amount",
+        "sub_total_amount",
+        "discount",
+        "down_payment",
+        "taxable_base",
+        "tax_amount",
+        "luxury_goods_sales_tax",
+        "total_amount"
+    };
+
+    public static readonly HashSet<string> Date = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "invoice_date",
+        "delivery_note_date",
+        "tax_invoice_date"
+    };
+
+    public static IReadOnlyList<string> GetHeader(DocumentType documentType) => documentType switch
+    {
+        DocumentType.Invoice => InvoiceHeader,
+        DocumentType.DeliveryNote => DeliveryNoteHeader,
+        DocumentType.TaxInvoice => TaxInvoiceHeader,
+        _ => throw new ArgumentOutOfRangeException(nameof(documentType))
+    };
+
+    public static IReadOnlyList<string> GetLineItems(DocumentType documentType) => documentType switch
+    {
+        DocumentType.Invoice => InvoiceLineItem,
+        DocumentType.DeliveryNote => DeliveryNoteLineItem,
+        DocumentType.TaxInvoice => TaxInvoiceLineItem,
+        _ => throw new ArgumentOutOfRangeException(nameof(documentType))
+    };
+
+    public static bool IsKnownField(string fieldName) =>
+        InvoiceHeader.Contains(fieldName, StringComparer.OrdinalIgnoreCase) ||
+        DeliveryNoteHeader.Contains(fieldName, StringComparer.OrdinalIgnoreCase) ||
+        TaxInvoiceHeader.Contains(fieldName, StringComparer.OrdinalIgnoreCase) ||
+        InvoiceLineItem.Contains(fieldName, StringComparer.OrdinalIgnoreCase) ||
+        DeliveryNoteLineItem.Contains(fieldName, StringComparer.OrdinalIgnoreCase) ||
+        TaxInvoiceLineItem.Contains(fieldName, StringComparer.OrdinalIgnoreCase);
 
     /// Kata kunci untuk klasifikasi jenis dokumen per halaman (FR-8).
     /// Diisi dari istilah yang benar-benar ditemukan di sample data
@@ -188,13 +246,13 @@ public static class CanonicalFields
         //nomor surat faktur pajak
         ["Kode dan Nomor Seri Faktur Pajak"] = "tax_invoice_number",
 
-        //date invoice
-        ["Date"] = "invoice_date",
-
         //date delivery note
         ["Tgl/Date"] = "delivery_note_date",
         ["DO Date"] = "delivery_note_date",
-        ["Date"] = "delivery_note_date",
+
+        //date invoice dan faktur pajak perlu dipetakan berdasarkan konteks dokumen
+        ["Invoice Date"] = "invoice_date",
+        ["Tax Invoice Date"] = "tax_invoice_date",
 
         //date faktur pajak
         //ada di atas signature
