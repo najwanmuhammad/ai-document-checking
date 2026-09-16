@@ -167,9 +167,38 @@ public static class CanonicalFields
         ["nama penanda tangan"] = "signer_name",
         ["jabatan"] = "signer_position",
 
-        // nama supplier dan nomor surat gimana ya caranya.
+        // nama supplier
         ["supplier name"] = "supplier_name",
-        ["nama"] = "supplier_name", // hati-hati: label "Nama" generik, perlu context tambahan (lihat TODO di CleaningService)
+        ["vendor"] = "supplier_name",
+        ["nama supplier"] = "supplier_name",
+        ["Pengusaha Kena Pajak: Nama :"] = "supplier_name",
+
+        //nomor surat invocie
+        ["Faktur Penjualan / Invoice No."] = "invoice_number",
+        ["SALES INVOICE No"] = "invoice_number",
+        ["Invoice No."] = "invoice_number",
+        ["Invoice No"] = "invoice_number",
+
+        //nomor surat delivery note
+        ["No."] = "delivery_note_number",
+        ["No"] = "delivery_note_number",
+        ["Number"] = "delivery_note_number",
+        ["DO No."] = "delivery_note_number",
+
+        //nomor surat faktur pajak
+        ["Kode dan Nomor Seri Faktur Pajak"] = "tax_invoice_number",
+
+        //date invoice
+        ["Date"] = "invoice_date",
+
+        //date delivery note
+        ["Tgl/Date"] = "delivery_note_date",
+        ["DO Date"] = "delivery_note_date",
+        ["Date"] = "delivery_note_date",
+
+        //date faktur pajak
+        //ada di atas signature
+
     };
 
     /// Token hasil OCR yang tidak punya makna sendiri sebagai data (simbol
