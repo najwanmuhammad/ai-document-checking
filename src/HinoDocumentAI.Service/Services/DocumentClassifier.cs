@@ -1,50 +1,86 @@
-﻿namespace HinoDocumentAI.Service.Services;
+using System.Text.RegularExpressions;
+using FuzzySharp;
 
-/// Klasifikasi jenis dokumen PER HALAMAN (bukan per file), pakai fuzzy
-/// match supaya toleran typo kecil OCR (mis. "DELIVERY SLI" karena satu
-/// huruf terpotong saat deteksi). Ini juga yang menyelesaikan masalah
-/// "halaman lampiran ikut ke-extract padahal bukan invoice" — halaman yang
-/// tidak cocok kata kunci apa pun otomatis dapat DocumentType.Unknown dan
-/// tinggal di-skip oleh pemanggil.
-public static class DocumentClassifier
+namespace HinoDocumentAI.Service.Services;
+
+public record DocumentClassification(
+    DocumentType DocumentType,
+    double Confidence,
+    string? MatchedKeyword);
+
+/// <summary>
+/// Classifies each OCR page independently. All document types are scored first
+/// so a secondary word such as "invoice" cannot win merely because it was
+/// checked before the actual page title.
+/// </summary>
+public static partial class DocumentClassifier
 {
     private const int FuzzyThreshold = 85;
 
-    public static DocumentType Classify(string rawText)
+    public static DocumentType Classify(string rawText) =>
+        ClassifyDetailed(rawText).DocumentType;
+
+    public static DocumentClassification ClassifyDetailed(string rawText)
     {
-        if (string.IsNullOrWhiteSpace(rawText)) return DocumentType.Unknown;
-
-        // Faktur Pajak dicek lebih dulu karena formatnya sama semua
-        foreach (var keyword in CanonicalFields.DocumentTypeKeywords[DocumentType.TaxInvoice])
+        if (string.IsNullOrWhiteSpace(rawText))
         {
-            if (ContainsFuzzy(rawText, keyword)) return DocumentType.TaxInvoice;
+            return new DocumentClassification(DocumentType.Unknown, 0, null);
         }
-        foreach (var keyword in CanonicalFields.DocumentTypeKeywords[DocumentType.Invoice])
-        {
-            if (ContainsFuzzy(rawText, keyword)) return DocumentType.Invoice;
-        }
-        foreach (var keyword in CanonicalFields.DocumentTypeKeywords[DocumentType.DeliveryNote])
-        {
-            if (ContainsFuzzy(rawText, keyword)) return DocumentType.DeliveryNote;
-        }
-        return DocumentType.Unknown;
-    }
 
-    private static bool ContainsFuzzy(string haystack, string needle)
-    {
-        var words = haystack.Split(
-            new[] { ' ', '\n', '\r', '\t' },
-            StringSplitOptions.RemoveEmptyEntries);
-        int needleWordCount = needle.Split(' ').Length;
+        string normalized = Normalize(rawText);
+        var scores = new List<(DocumentType Type, int Score, int Position, string Keyword)>();
 
-        for (int i = 0; i <= words.Length - needleWordCount; i++)
+        foreach ((DocumentType type, string[] keywords) in CanonicalFields.DocumentTypeKeywords)
         {
-            string window = string.Join(" ", words.Skip(i).Take(needleWordCount));
-            if (FuzzySharp.Fuzz.Ratio(window.ToLowerInvariant(), needle.ToLowerInvariant()) >= FuzzyThreshold)
+            foreach (string keyword in keywords)
             {
-                return true;
+                string normalizedKeyword = Normalize(keyword);
+                int position = normalized.IndexOf(normalizedKeyword, StringComparison.Ordinal);
+                int score = position >= 0 ? 100 : BestWindowScore(normalized, normalizedKeyword);
+                scores.Add((type, score, position < 0 ? int.MaxValue : position, keyword));
             }
         }
-        return false;
+
+        var best = scores
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Position)
+            .ThenBy(item => Priority(item.Type))
+            .First();
+
+        if (best.Score < FuzzyThreshold)
+        {
+            return new DocumentClassification(DocumentType.Unknown, best.Score / 100.0, null);
+        }
+
+        return new DocumentClassification(best.Type, best.Score / 100.0, best.Keyword);
     }
+
+    private static int BestWindowScore(string haystack, string needle)
+    {
+        string[] words = haystack.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int needleWordCount = needle.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        int best = 0;
+
+        for (int index = 0; index <= words.Length - needleWordCount; index++)
+        {
+            string window = string.Join(' ', words.Skip(index).Take(needleWordCount));
+            best = Math.Max(best, Fuzz.Ratio(window, needle));
+        }
+
+        return best;
+    }
+
+    private static string Normalize(string value) =>
+        WhitespaceRegex().Replace(value.ToLowerInvariant(), " ").Trim();
+
+    private static int Priority(DocumentType type) => type switch
+    {
+        DocumentType.TaxInvoice => 0,
+        DocumentType.DeliveryNote => 1,
+        DocumentType.Invoice => 2,
+        _ => 3
+    };
+
+    [GeneratedRegex(@"[^\p{L}\p{N}]+", RegexOptions.CultureInvariant)]
+    private static partial Regex WhitespaceRegex();
 }
